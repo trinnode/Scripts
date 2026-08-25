@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # ==============================================================================
-# VidFlow (vidflow.sh)
+# VidFlow (vidflow.sh) v2.2
 # Description: Premium, visual, and fail-safe batch downloader for YouTube 
 #              media with auto-install, dual-mode input, and smart routing.
 # ==============================================================================
@@ -21,6 +21,8 @@ UNDERLINE='\033[4m'
 
 # Global array to hold URLs
 URLS=()
+# Global array for yt-dlp authentication arguments
+YTDLP_COOKIE_ARGS=()
 
 # --- Visual Helper Functions ---
 print_header() {
@@ -40,77 +42,46 @@ print_separator() {
 
 # --- Dependency Auto-Installer ---
 ensure_deps() {
-    local need_ytdlp=false
     local need_ffmpeg=false
-
-    if ! command -v yt-dlp &> /dev/null; then need_ytdlp=true; fi
     if ! command -v ffmpeg &> /dev/null; then need_ffmpeg=true; fi
 
-    if [[ "$need_ytdlp" == false && "$need_ffmpeg" == false ]]; then
-        return 0
-    fi
+    # FORCE INSTALL LATEST yt-dlp BINARY TO BYPASS BROKEN APT VERSIONS
+    echo -e "${CYAN}Ensuring latest official yt-dlp binary is installed...${NC}"
+    mkdir -p "$HOME/.local/bin"
+    curl -sL https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -o "$HOME/.local/bin/yt-dlp"
+    chmod a+rx "$HOME/.local/bin/yt-dlp"
+    
+    # Ensure ~/.local/bin is in PATH for this session
+    export PATH="$HOME/.local/bin:$PATH"
 
-    echo -e "${YELLOW}⚠ Missing dependencies detected.${NC}"
-    [[ "$need_ytdlp" == true ]] && echo -e "  ${RED}✖${NC} yt-dlp (Required for downloading)"
-    [[ "$need_ffmpeg" == true ]] && echo -e "  ${RED}✖${NC} ffmpeg (Required for merging 720p video+audio)"
-    echo -e "${CYAN}Attempting to install missing dependencies...${NC}\n"
-    sleep 1
-
-    if [[ "$OSTYPE" == "darwin"* ]]; then
-        # macOS
-        if command -v brew &> /dev/null; then
-            local brew_packages=()
-            [[ "$need_ytdlp" == true ]] && brew_packages+=("yt-dlp")
-            [[ "$need_ffmpeg" == true ]] && brew_packages+=("ffmpeg")
-            brew install "${brew_packages[@]}"
+    if [[ "$need_ffmpeg" == true ]]; then
+        echo -e "${YELLOW}⚠ Missing dependency: ffmpeg${NC}"
+        echo -e "${CYAN}Attempting to install ffmpeg...${NC}\n"
+        if command -v apt &> /dev/null; then
+            sudo apt update && sudo apt install -y ffmpeg
+        elif command -v dnf &> /dev/null; then
+            sudo dnf install -y ffmpeg
+        elif command -v pacman &> /dev/null; then
+            sudo pacman -Sy --noconfirm ffmpeg
+        elif command -v brew &> /dev/null; then
+            brew install ffmpeg
         else
-            echo -e "${RED}✖ Homebrew not found. Please install Homebrew first: https://brew.sh${NC}"
+            echo -e "${RED}✖ Please install FFmpeg manually via your system package manager.${NC}"
             exit 1
         fi
-    elif [[ "$OSTYPE" == "linux-gnu"* ]]; then
-        # Linux
-        if command -v apt &> /dev/null; then
-            local apt_packages=()
-            [[ "$need_ytdlp" == true ]] && apt_packages+=("yt-dlp")
-            [[ "$need_ffmpeg" == true ]] && apt_packages+=("ffmpeg")
-            sudo apt update && sudo apt install -y "${apt_packages[@]}"
-        elif command -v dnf &> /dev/null; then
-            local dnf_packages=()
-            [[ "$need_ytdlp" == true ]] && dnf_packages+=("yt-dlp")
-            [[ "$need_ffmpeg" == true ]] && dnf_packages+=("ffmpeg")
-            sudo dnf install -y "${dnf_packages[@]}"
-        elif command -v pacman &> /dev/null; then
-            local pacman_packages=()
-            [[ "$need_ytdlp" == true ]] && pacman_packages+=("yt-dlp")
-            [[ "$need_ffmpeg" == true ]] && pacman_packages+=("ffmpeg")
-            sudo pacman -Sy --noconfirm "${pacman_packages[@]}"
-        else
-            # Fallback: download binary manually
-            echo -e "${YELLOW}No supported package manager found. Downloading binaries...${NC}"
-            mkdir -p "$HOME/.local/bin"
-            if [[ "$need_ytdlp" == true ]]; then
-                curl -L https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -o "$HOME/.local/bin/yt-dlp"
-                chmod a+rx "$HOME/.local/bin/yt-dlp"
-                export PATH="$HOME/.local/bin:$PATH"
-            fi
-            if [[ "$need_ffmpeg" == true ]]; then
-                echo -e "${RED}✖ FFmpeg cannot be auto-installed via binary fallback.${NC}"
-                echo -e "${YELLOW}Please install FFmpeg manually via your package manager.${NC}"
-                exit 1
-            fi
-        fi
-    else
-        echo -e "${RED}✖ Unsupported OS for auto-installation.${NC}"
-        exit 1
     fi
 
     # Verify installation
-    if ! command -v yt-dlp &> /dev/null; then
-        echo -e "\n${RED}✖ Failed to install yt-dlp. Please install it manually.${NC}"
+    if command -v yt-dlp &> /dev/null; then
+        local ytdlp_version
+        ytdlp_version=$(yt-dlp --version)
+        echo -e "\n${GREEN}✔ yt-dlp (v${ytdlp_version}) successfully installed/updated.${NC}"
+        echo -e "${GREEN}✔ Dependencies verified.${NC}\n"
+    else
+        echo -e "\n${RED}✖ Failed to install yt-dlp. Please check your internet connection.${NC}"
         exit 1
     fi
-    echo -e "\n${GREEN}✔ Dependencies successfully installed and verified.${NC}\n"
-    sleep 1.5
+    sleep 1
 }
 
 sanitize() {
@@ -120,12 +91,10 @@ sanitize() {
 get_playlist_name() {
     local url="$1"
     local pname
-    # FIX: Added --playlist-items 1 to prevent fetching metadata for every video, 
-    # which was causing the directory name to repeat (e.g., "Name Name Name").
-    pname=$(yt-dlp --playlist-items 1 --no-warnings --print "%(playlist_title)s" "$url" 2>/dev/null | head -n 1)
+    pname=$(yt-dlp "${YTDLP_COOKIE_ARGS[@]}" --playlist-items 1 --no-warnings --print "%(playlist_title)s" "$url" 2>/dev/null | head -n 1)
     
     if [[ -z "$pname" || "$pname" == "NA" ]]; then
-        pname=$(yt-dlp --playlist-items 1 --no-warnings --print "%(channel)s" "$url" 2>/dev/null | head -n 1)
+        pname=$(yt-dlp "${YTDLP_COOKIE_ARGS[@]}" --playlist-items 1 --no-warnings --print "%(channel)s" "$url" 2>/dev/null | head -n 1)
     fi
     
     if [[ -z "$pname" || "$pname" == "NA" ]]; then
@@ -138,8 +107,7 @@ get_playlist_name() {
 is_playlist() {
     local url="$1"
     local pid
-    # FIX: Added --playlist-items 1 for instant metadata checking on massive playlists
-    pid=$(yt-dlp --playlist-items 1 --no-warnings --print "%(playlist_id)s" "$url" 2>/dev/null | head -n 1)
+    pid=$(yt-dlp "${YTDLP_COOKIE_ARGS[@]}" --playlist-items 1 --no-warnings --print "%(playlist_id)s" "$url" 2>/dev/null | head -n 1)
     if [[ "$pid" != "NA" && -n "$pid" ]]; then
         return 0
     else
@@ -220,6 +188,22 @@ main() {
     mkdir -p "$SINGLE_DIR"
     echo -e "${GREEN}✔ Singles will route to:${NC} ${UNDERLINE}${CYAN}$SINGLE_DIR${NC}\n"
 
+    echo -e "${YELLOW}ℹ YouTube frequently blocks automated downloads (HTTP 429 / Bot check).${NC}"
+    echo -e "${YELLOW}ℹ Providing browser cookies improves success rates for some users.${NC}"
+    read -r -p "$(echo -e "${CYAN}▶ Enter browser name to extract cookies from ${DIM}(e.g., chrome, firefox, brave, edge, or leave blank to skip)${NC}${CYAN}: ${NC}")" browser_name
+    
+    browser_name=$(echo "$browser_name" | tr '[:upper:]' '[:lower:]' | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
+    if [[ -n "$browser_name" ]]; then
+        if [[ "$browser_name" =~ ^(chrome|firefox|brave|edge|opera|vivaldi|safari)$ ]]; then
+            YTDLP_COOKIE_ARGS=("--cookies-from-browser" "$browser_name")
+            echo -e "${GREEN}✔ Will use cookies from:${NC} ${BOLD}${browser_name}${NC}\n"
+        else
+            echo -e "${YELLOW}⚠ Unrecognized browser '${browser_name}'. Skipping cookies.${NC}\n"
+        fi
+    else
+        echo -e "${YELLOW}⚠ Skipping browser cookies.${NC}\n"
+    fi
+
     collect_urls
 
     if [[ ${#URLS[@]} -eq 0 ]]; then
@@ -261,16 +245,51 @@ main() {
         echo -e "${BLUE}↳ Target:${NC} ${UNDERLINE}${CYAN}$target_dir${NC}"
         echo -e "${GREEN}⬇️  Starting download...${NC}\n"
 
-        yt-dlp -P "$target_dir" \
-               -f "bestvideo[height<=720]+bestaudio/best[height<=720]" \
-               "${dl_output[@]}" \
-               "$url"
+        # Primary attempt: Use web_embedded and android clients (bypasses "page needs to be reloaded")
+        local ytdlp_args=(
+            -P "$target_dir"
+            -f "bestvideo[height<=720]+bestaudio/best[height<=720]"
+            --no-warnings
+            --retry-sleep 2
+            --extractor-args "youtube:player_client=web_embedded,android"
+        )
         
-        if [[ $? -eq 0 ]]; then
+        ytdlp_args+=("${YTDLP_COOKIE_ARGS[@]}")
+        
+        if [[ ${#dl_output[@]} -gt 0 ]]; then
+            ytdlp_args+=("${dl_output[@]}")
+        fi
+        
+        ytdlp_args+=("$url")
+
+        # Execute primary attempt
+        yt-dlp "${ytdlp_args[@]}"
+        local exit_code=$?
+
+        # AUTO-RETRY FALLBACK: If it fails with "reloaded" or 403, retry once with NO cookies and 'default' client
+        if [[ $exit_code -ne 0 ]]; then
+            echo -e "\n${YELLOW}⚠ Primary attempt failed. Triggering fallback retry (no cookies, default client)...${NC}"
+            sleep 2
+            
+            local fallback_args=(
+                -P "$target_dir"
+                -f "bestvideo[height<=720]+bestaudio/best[height<=720]"
+                --no-warnings
+                --retry-sleep 3
+                --extractor-args "youtube:player_client=default"
+                "$url"
+            )
+            
+            yt-dlp "${fallback_args[@]}"
+            exit_code=$?
+        fi
+        
+        if [[ $exit_code -eq 0 ]]; then
             echo -e "\n${GREEN}✅ SUCCESS:${NC} Download completed without errors."
             ((success_count++))
         else
-            echo -e "\n${RED}❌ FAILED:${NC} yt-dlp encountered an error (check output above)."
+            echo -e "\n${RED}❌ FAILED:${NC} yt-dlp encountered an error."
+            echo -e "${YELLOW}💡 TIP: YouTube may be temporarily blocking your IP. Try using a VPN or waiting a few hours.${NC}"
             ((fail_count++))
         fi
         

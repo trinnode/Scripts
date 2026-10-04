@@ -1,9 +1,10 @@
 #!/bin/bash
 
 # ==============================================================================
-# VidFlow (vidflow.sh) v2.2
-# Description: Premium, visual, and fail-safe batch downloader for YouTube 
-#              media with auto-install, dual-mode input, and smart routing.
+# VidFlow (vidflow.sh) v2.3
+# Description: Premium, visual, and fail-safe batch downloader for YouTube
+#              media with auto-install, dual-mode input, smart routing,
+#              and 720p / 1080p quality selection.
 # ==============================================================================
 
 # --- Vibrant Color & Effect Definitions ---
@@ -23,6 +24,10 @@ UNDERLINE='\033[4m'
 URLS=()
 # Global array for yt-dlp authentication arguments
 YTDLP_COOKIE_ARGS=()
+# Global quality selection (default 1080p)
+QUALITY_HEIGHT="1080"
+QUALITY_LABEL="1080p Max (Best Video + Best Audio)"
+FORMAT_SELECTOR="bestvideo[height<=1080]+bestaudio/best[height<=1080]"
 
 # --- Visual Helper Functions ---
 print_header() {
@@ -30,7 +35,7 @@ print_header() {
     echo -e "${MAGENTA}╔══════════════════════════════════════════════════════════════╗${NC}"
     echo -e "${MAGENTA}║${BOLD}${WHITE}  🌊  V i d F l o w   -   A d v a n c e d   M e d i a   F e t c h e r  🌊  ${MAGENTA}║${NC}"
     echo -e "${MAGENTA}╠══════════════════════════════════════════════════════════════╣${NC}"
-    echo -e "${MAGENTA}║${CYAN}  ► Quality:${NC} ${WHITE}720p Max (Best Video + Best Audio)             ${MAGENTA}║${NC}"
+    echo -e "${MAGENTA}║${CYAN}  ► Quality:${NC} ${WHITE}${QUALITY_LABEL}             ${MAGENTA}║${NC}"
     echo -e "${MAGENTA}║${CYAN}  ► Base Path:${NC} ${WHITE}~/Videos/                                    ${MAGENTA}║${NC}"
     echo -e "${MAGENTA}║${CYAN}  ► Features:${NC} ${WHITE}Auto-Install, Live Progress, Smart Routing   ${MAGENTA}║${NC}"
     echo -e "${MAGENTA}╚══════════════════════════════════════════════════════════════╝${NC}\n"
@@ -115,6 +120,36 @@ is_playlist() {
     fi
 }
 
+choose_quality() {
+    echo -e "${BOLD}${GREEN}STEP 1.5: Quality Selection${NC}"
+    echo -e "${CYAN}  [1]${NC} ${WHITE}720p${NC} ${DIM}(faster, smaller file)${NC}"
+    echo -e "${CYAN}  [2]${NC} ${WHITE}1080p${NC} ${DIM}(best quality, larger file)${NC}"
+    read -r -p "$(echo -e "${CYAN}▶ Choose quality ${DIM}[1/2, default: 2]${NC}${CYAN}: ${NC}")" q_choice
+
+    # Normalize input: allow "1", "2", "720", "720p", "1080", "1080p"
+    q_choice=$(echo "$q_choice" | tr '[:upper:]' '[:lower:]' | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
+
+    case "$q_choice" in
+        1|720|720p)
+            QUALITY_HEIGHT="720"
+            QUALITY_LABEL="720p (Best Video <=720p + Best Audio)"
+            FORMAT_SELECTOR="bestvideo[height<=720]+bestaudio/best[height<=720]"
+            ;;
+        ""|2|1080|1080p)
+            QUALITY_HEIGHT="1080"
+            QUALITY_LABEL="1080p Max (Best Video + Best Audio)"
+            FORMAT_SELECTOR="bestvideo[height<=1080]+bestaudio/best[height<=1080]"
+            ;;
+        *)
+            echo -e "${YELLOW}⚠ Invalid choice '${q_choice}'. Defaulting to 1080p.${NC}"
+            QUALITY_HEIGHT="1080"
+            QUALITY_LABEL="1080p Max (Best Video + Best Audio)"
+            FORMAT_SELECTOR="bestvideo[height<=1080]+bestaudio/best[height<=1080]"
+            ;;
+    esac
+    echo -e "${GREEN}✔ Quality set to:${NC} ${BOLD}${QUALITY_LABEL}${NC}\n"
+}
+
 collect_urls() {
     echo -e "${BOLD}${GREEN}STEP 2: URL Input${NC}"
     read -r -p "$(echo -e "${CYAN}▶ Do you have a list of links to paste all at once? ${DIM}(y/N)${NC}${CYAN}: ${NC}")" batch_mode
@@ -188,6 +223,8 @@ main() {
     mkdir -p "$SINGLE_DIR"
     echo -e "${GREEN}✔ Singles will route to:${NC} ${UNDERLINE}${CYAN}$SINGLE_DIR${NC}\n"
 
+    choose_quality
+
     echo -e "${YELLOW}ℹ YouTube frequently blocks automated downloads (HTTP 429 / Bot check).${NC}"
     echo -e "${YELLOW}ℹ Providing browser cookies improves success rates for some users.${NC}"
     read -r -p "$(echo -e "${CYAN}▶ Enter browser name to extract cookies from ${DIM}(e.g., chrome, firefox, brave, edge, or leave blank to skip)${NC}${CYAN}: ${NC}")" browser_name
@@ -248,7 +285,7 @@ main() {
         # Primary attempt: Use web_embedded and android clients (bypasses "page needs to be reloaded")
         local ytdlp_args=(
             -P "$target_dir"
-            -f "bestvideo[height<=720]+bestaudio/best[height<=720]"
+            -f "$FORMAT_SELECTOR"
             --no-warnings
             --retry-sleep 2
             --extractor-args "youtube:player_client=web_embedded,android"
@@ -273,7 +310,7 @@ main() {
             
             local fallback_args=(
                 -P "$target_dir"
-                -f "bestvideo[height<=720]+bestaudio/best[height<=720]"
+                -f "$FORMAT_SELECTOR"
                 --no-warnings
                 --retry-sleep 3
                 --extractor-args "youtube:player_client=default"
